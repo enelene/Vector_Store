@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package vectordb;
+option go_package = "vectordb/api/proto;vectordbpb";
+
+// ── VectorDatabase client-facing RPCs ────────────────────────────────────────
+
+message InsertRequest {
+  string         id     = 1;
+  repeated float vector = 2;
+}
+
+message InsertResponse {
+  string id      = 1;
+  bool   success = 2;
+}
+
+message SearchRequest {
+  repeated float query_vector = 1;
+  int32          top_k        = 2;
+}
+
+message SearchResult {
+  string id    = 1;
+  float  score = 2;
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+}
+
+service VectorDatabase {
+  rpc Insert (InsertRequest)  returns (InsertResponse);
+  rpc Search (SearchRequest)  returns (SearchResponse);
+}
+
+// ── Raft internal RPCs ────────────────────────────────────────────────────────
+// These messages are used exclusively for inter-node Raft consensus.
+// Clients never call RaftService directly.
+
+// RaftLogEntry is a single entry in the replicated log.
+// The command field carries a JSON-encoded InsertCommand, or is empty for
+// leader no-op heartbeat entries.
+message RaftLogEntry {
+  int32 term    = 1;
+  bytes command = 2;
+}
+
+// VoteRequest is sent by a candidate to solicit votes during an election
+// (§5.2 of the Raft paper).
+message VoteRequest {
+  int32 term           = 1; // candidate's current term
+  int32 candidate_id   = 2; // candidate's node index in the peers array
+  int32 last_log_index = 3; // index of candidate's last log entry
+  int32 last_log_term  = 4; // term of candidate's last log entry
+}
+
+message VoteResponse {
+  int32 term         = 1; // respondent's current term (for candidate to update)
+  bool  vote_granted = 2;
+}
+
+// AppendRequest serves dual purpose: heartbeat (entries empty) and log
+// replication.  Sent periodically by the leader to every follower (§5.3).
+message AppendRequest {
+  int32                 term           = 1;
+  int32                 leader_id      = 2;
+  int32                 prev_log_index = 3; // index of log entry preceding entries
+  int32                 prev_log_term  = 4; // term of prev_log_index entry
+  repeated RaftLogEntry entries        = 5;
+  int32                 leader_commit  = 6; // leader's commitIndex
+}
+
+// AppendResponse carries fast-backtrack fields so the leader can binary-search
+// for the first conflicting entry rather than decrementing nextIndex one at a
+// time (§5.3 optimisation from the Raft paper).
+message AppendResponse {
+  int32 term           = 1;
+  bool  success        = 2;
+  // conflict_index: first index of conflict_term in the follower's log,
+  // or the length of the follower's log if it is too short.
+  int32 conflict_index = 3;
+  // conflict_term: term at the conflicting index; -1 if log is too short.
+  int32 conflict_term  = 4;
+}
+
+// RaftService is the internal cluster communication plane.
+// Every node registers both as a server (handles incoming Raft RPCs) and
+// creates clients to every peer (sends outgoing Raft RPCs).
+service RaftService {
+  rpc RequestVote   (VoteRequest)   returns (VoteResponse);
+  rpc AppendEntries (AppendRequest) returns (AppendResponse);
+}
