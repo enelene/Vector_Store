@@ -1,0 +1,51 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Services for the VectorDB cluster
+#
+#  1. vectordb-headless — a HEADLESS service (clusterIP: None). It does NOT load
+#     balance; instead it gives every StatefulSet pod a stable, individually
+#     resolvable DNS name:
+#
+#         vectordb-0.vectordb-headless.<namespace>.svc.cluster.local
+#         vectordb-1.vectordb-headless.<namespace>.svc.cluster.local
+#         vectordb-2.vectordb-headless.<namespace>.svc.cluster.local
+#
+#     This is what lets Raft nodes find each other (see VECTORDB_PEERS in the
+#     StatefulSet). A StatefulSet REQUIRES such a service, named via serviceName.
+#
+#  2. vectordb — a normal ClusterIP service that load-balances client traffic
+#     across all nodes. Clients can send Insert/Search to this one VIP: Insert is
+#     auto-forwarded to the Raft leader, and Search is served locally by any node.
+# ──────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: vectordb-headless
+  labels:
+    app: vectordb
+spec:
+  clusterIP: None # headless: DNS returns each pod's own address
+  selector:
+    app: vectordb
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+  # Publish pod DNS even before pods pass readiness, so nodes can discover and
+  # connect to each other while the cluster is still bootstrapping/electing.
+  publishNotReadyAddresses: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vectordb
+  labels:
+    app: vectordb
+spec:
+  type: ClusterIP # single virtual IP, load-balanced across all nodes
+  selector:
+    app: vectordb
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc

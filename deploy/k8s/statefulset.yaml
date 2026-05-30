@@ -1,0 +1,106 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# VectorDB StatefulSet — a 3-node Raft cluster
+#
+# A StatefulSet (not a Deployment) is used because Raft nodes need STABLE
+# identities and STABLE storage:
+#
+#   • Stable network identity — pods are named vectordb-0, vectordb-1, vectordb-2.
+#     The binary derives its Raft node id from this ordinal (POD_NAME → id), so
+#     each node knows exactly which peer it is in VECTORDB_PEERS.
+#
+#   • Stable storage — each pod gets its OWN PersistentVolume (volumeClaimTemplate)
+#     mounted at /data. The Raft state snapshot written on graceful shutdown
+#     survives a restart and is reattached to the SAME pod ordinal.
+#
+# Deploy AFTER service.yaml (the StatefulSet references vectordb-headless).
+# ──────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vectordb
+  labels:
+    app: vectordb
+spec:
+  serviceName: vectordb-headless # must match the headless Service name
+  replicas: 3
+  # Parallel: start/restart all pods at once so an election can happen promptly
+  # during bootstrap, instead of waiting for pods to come up one at a time.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate # upgrade one pod at a time (reverse ordinal), keeping quorum
+  selector:
+    matchLabels:
+      app: vectordb
+  template:
+    metadata:
+      labels:
+        app: vectordb
+    spec:
+      # Give the node time to drain RPCs, step down as leader and snapshot state
+      # before Kubernetes escalates to SIGKILL. Must exceed the binary's
+      # shutdownGrace (10s).
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # The distroless image runs as uid/gid 65532. fsGroup makes the mounted
+        # PersistentVolume group-writable so the Raft snapshot can be written.
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: vectordb
+          image: vectordb:latest
+          # For local clusters (kind/minikube) you load the image into the node,
+          # so never try to pull it from a registry.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 50051
+          env:
+            # Pod name (e.g. "vectordb-1") injected via the downward API; the
+            # binary parses its ordinal to determine this node's Raft id.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VECTORDB_PORT
+              value: "50051"
+            - name: VECTORDB_DATA_DIR
+              value: "/data"
+            # Full peer list — identical for every pod. Uses the stable per-pod
+            # DNS names provided by the headless service (same-namespace short form).
+            - name: VECTORDB_PEERS
+              value: "vectordb-0.vectordb-headless:50051,vectordb-1.vectordb-headless:50051,vectordb-2.vectordb-headless:50051"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          # tcpSocket probes: the gRPC port accepting connections means the node
+          # is serving. (A node can answer Search as soon as it is up; writes are
+          # forwarded to the leader, so per-node readiness need not track quorum.)
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+  # One PersistentVolume per pod, holding that node's Raft state snapshot.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
