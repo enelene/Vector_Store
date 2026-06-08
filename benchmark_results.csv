@@ -1,0 +1,11 @@
+experiment,x_value,recall_at_1,recall_at_10,qps,ingestion_per_sec,latency_p50_ms,latency_p99_ms
+efsearch,10,0.50,0.47,46000,,0.85,3.0
+efsearch,25,0.58,0.55,38000,,1.05,4.2
+efsearch,50,0.64,0.62,30000,,1.36,6.25
+efsearch,100,0.77,0.74,20500,,2.00,9.6
+efsearch,200,0.88,0.85,12200,,3.30,16.0
+efsearch,400,0.95,0.93,6600,,5.90,29.0
+nodecount,1,,,30000,1316,,6.25
+nodecount,3,,,82000,1180,,7.40
+nodecount,5,,,131000,1075,,8.30
+nodecount,7,,,176000,1000,,9.40
